@@ -16,16 +16,16 @@ from redfish import redfish_client
 from redfish.rest.v1 import InvalidCredentialsError
 
 from config import (
-    EXPORTER_CRASH_MSG,
-    EXPORTER_HEALTH_RETRY_COUNT,
-    EXPORTER_HEALTH_RETRY_TIMEOUT,
+    HARDWARE_EXPORTER_CRASH_MSG,
+    HARDWARE_EXPORTER_HEALTH_RETRY_COUNT,
+    HARDWARE_EXPORTER_HEALTH_RETRY_TIMEOUT,
     REDFISH_MAX_RETRY,
     REDFISH_TIMEOUT,
     HWTool,
 )
 from hardware import get_bmc_address
 from hw_tools import HWToolHelper, bmc_hw_verifier
-from service import Exporter, ExporterError
+from service import HardwareExporter, ExporterError
 
 logger = logging.getLogger(__name__)
 
@@ -47,13 +47,13 @@ class HardwareObserverCharm(ops.CharmBase):
             self,
             refresh_events=[self.on.config_changed, self.on.upgrade_charm],
             metrics_endpoints=[
-                {"path": "/metrics", "port": int(self.model.config["exporter-port"])}
+                {"path": "/metrics", "port": int(self.model.config["hardware-exporter-port"])}
             ],
             # Setting scrape_timeout as collect_timeout in the `duration` format specified in
             # https://prometheus.io/docs/prometheus/latest/configuration/configuration/#duration
             scrape_configs=[{"scrape_timeout": f"{int(self.model.config['collect-timeout'])}s"}],
         )
-        self.exporter = Exporter(self.charm_dir)
+        self.hardware_exporter = HardwareExporter(self.charm_dir)
 
         self.framework.observe(self.on.config_changed, self._on_config_changed)
         self.framework.observe(self.on.install, self._on_install_or_upgrade)
@@ -85,17 +85,20 @@ class HardwareObserverCharm(ops.CharmBase):
             self.model.unit.status = BlockedStatus(msg)
             return
 
-        # Install exporter
-        self.model.unit.status = MaintenanceStatus("Installing exporter...")
-        success = self.exporter.install(
-            int(self.model.config["exporter-port"]),
+        # Install hardware exporter
+        self.model.unit.status = MaintenanceStatus("Installing hardware exporter...")
+        hardware_exporter_success = self.hardware_exporter.install(
+            int(self.model.config["hardware-exporter-port"]),
             self.model.config["exporter-log-level"],
             self.get_redfish_conn_params(),
             int(self.model.config["collect-timeout"]),
         )
-        self._stored.exporter_installed = success
-        if not success:
-            msg = "Failed to install exporter, please refer to `juju debug-log`"
+        self._stored.hardware_exporter_installed = hardware_exporter_success
+
+        # Install other exporters here
+
+        if not hardware_exporter_success:
+            msg = "Failed to install hardware exporter, please refer to `juju debug-log`"
             logger.error(msg)
             self.model.unit.status = BlockedStatus(msg)
             return
@@ -107,14 +110,16 @@ class HardwareObserverCharm(ops.CharmBase):
         # Remove binary tool
         self.hw_tool_helper.remove(self.model.resources)
         self._stored.resource_installed = False
-        success = self.exporter.uninstall()
-        if not success:
-            msg = "Failed to uninstall exporter, please refer to `juju debug-log`"
+        hardware_exporter_success = self.hardware_exporter.uninstall()
+        if not hardware_exporter_success:
+            msg = "Failed to uninstall hardware exporter, please refer to `juju debug-log`"
             # we probably don't need to set any status here because the charm
             # will go away soon, so only logging is enough
             logger.warning(msg)
-        self._stored.exporter_installed = not success
-        logger.info("Remove complete")
+        self._stored.hardware_exporter_installed = not hardware_exporter_success
+        logger.info("Hardware exporter removal complete")
+
+        # Remove other exporters here
 
     def _on_update_status(self, _: EventBase) -> None:  # noqa: C901
         """Update the charm's status."""
@@ -140,7 +145,7 @@ class HardwareObserverCharm(ops.CharmBase):
             self.model.unit.status = BlockedStatus(error_msg)
             return
 
-        if not self.exporter.check_health():
+        if not self.hardware_exporter.check_health():
             logger.warning("Exporter health check - failed.")
             # if restart isn't successful, an ExporterError exception will be raised here
             self.restart_exporter()
@@ -150,19 +155,19 @@ class HardwareObserverCharm(ops.CharmBase):
     def restart_exporter(self) -> None:
         """Restart exporter service with retry."""
         try:
-            for i in range(1, EXPORTER_HEALTH_RETRY_COUNT + 1):
+            for i in range(1, HARDWARE_EXPORTER_HEALTH_RETRY_COUNT + 1):
                 logger.warning("Restarting exporter - %d retry", i)
-                self.exporter.restart()
-                sleep(EXPORTER_HEALTH_RETRY_TIMEOUT)
-                if self.exporter.check_active():
+                self.hardware_exporter.restart()
+                sleep(HARDWARE_EXPORTER_HEALTH_RETRY_TIMEOUT)
+                if self.hardware_exporter.check_active():
                     logger.info("Exporter active after restart.")
                     break
-            if not self.exporter.check_active():
+            if not self.hardware_exporter.check_active():
                 logger.error("Failed to restart the exporter.")
-                raise ExporterError(EXPORTER_CRASH_MSG)
+                raise ExporterError(HARDWARE_EXPORTER_CRASH_MSG)
         except Exception as err:  # pylint: disable=W0718
             logger.error("Exporter crashed unexpectedly: %s", err)
-            raise ExporterError(EXPORTER_CRASH_MSG) from err
+            raise ExporterError(HARDWARE_EXPORTER_CRASH_MSG) from err
 
     def _on_config_changed(self, event: EventBase) -> None:
         """Reconfigure charm."""
@@ -179,8 +184,8 @@ class HardwareObserverCharm(ops.CharmBase):
                 self.model.unit.status = BlockedStatus(message)
                 return
 
-            success = self.exporter.template.render_config(
-                port=int(self.model.config["exporter-port"]),
+            success = self.hardware_exporter.template.render_config(
+                port=int(self.model.config["hardware-exporter-port"]),
                 level=self.model.config["exporter-log-level"],
                 redfish_conn_params=self.get_redfish_conn_params(),
                 collect_timeout=int(self.model.config["collect-timeout"]),
@@ -189,7 +194,7 @@ class HardwareObserverCharm(ops.CharmBase):
                 message = "Failed to configure exporter, please check if the server is healthy."
                 self.model.unit.status = BlockedStatus(message)
                 return
-            self.exporter.restart()
+            self.hardware_exporter.restart()
 
         self._on_update_status(event)
 
@@ -204,16 +209,18 @@ class HardwareObserverCharm(ops.CharmBase):
             )
             event.defer()
             return
-        self.exporter.enable()
-        self.exporter.start()
+        self.hardware_exporter.enable()
+        self.hardware_exporter.start()
+        # Start and enable other exporter services
         logger.info("Start and enable exporter service")
         self._on_update_status(event)
 
     def _on_cos_agent_relation_departed(self, event: EventBase) -> None:
         """Remove the exporter when relation departed."""
         if self._stored.exporter_installed:  # type: ignore[truthy-function]
-            self.exporter.stop()
-            self.exporter.disable()
+            self.hardware_exporter.stop()
+            self.hardware_exporter.disable()
+            # Stop and disable other exporter services
             logger.info("Stop and disable exporter service")
         self._on_update_status(event)
 
@@ -231,10 +238,13 @@ class HardwareObserverCharm(ops.CharmBase):
 
     def validate_exporter_configs(self) -> Tuple[bool, str]:
         """Validate the static and runtime config options for the exporter."""
-        port = int(self.model.config["exporter-port"])
-        if not 1 <= port <= 65535:
-            logger.error("Invalid exporter-port: port must be in [1, 65535].")
-            return False, "Invalid config: 'exporter-port'"
+        hardware_exporter_port = int(self.model.config["hardware-exporter-port"])
+        if not 1 <= hardware_exporter_port <= 65535:
+            logger.error("Invalid hardware-exporter-port: port must be in [1, 65535].")
+            return False, "Invalid config: 'hardware-exporter-port'"
+
+        # Validate port value for other exporters
+        # Also validate each port value is unique
 
         level = self.model.config["exporter-log-level"]
         allowed_choices = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}

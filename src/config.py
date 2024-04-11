@@ -5,14 +5,14 @@ from enum import Enum
 from pathlib import Path
 
 # Exporter
-EXPORTER_NAME = "hardware-exporter"
-EXPORTER_CONFIG_PATH = Path(f"/etc/{EXPORTER_NAME}-config.yaml")
-EXPORTER_SERVICE_PATH = Path(f"/etc/systemd/system/{EXPORTER_NAME}.service")
-EXPORTER_CONFIG_TEMPLATE = f"{EXPORTER_NAME}-config.yaml.j2"
-EXPORTER_SERVICE_TEMPLATE = f"{EXPORTER_NAME}.service.j2"
-EXPORTER_HEALTH_RETRY_COUNT = 3
-EXPORTER_HEALTH_RETRY_TIMEOUT = 3
-EXPORTER_CRASH_MSG = "Exporter crashed unexpectedly, please refer to systemd logs..."
+HARDWARE_EXPORTER_NAME = "hardware-exporter"
+HARDWARE_EXPORTER_CONFIG_PATH = Path(f"/etc/{HARDWARE_EXPORTER_NAME}-config.yaml")
+HARDWARE_EXPORTER_SERVICE_PATH = Path(f"/etc/systemd/system/{HARDWARE_EXPORTER_NAME}.service")
+HARDWARE_EXPORTER_CONFIG_TEMPLATE = f"{HARDWARE_EXPORTER_NAME}-config.yaml.j2"
+HARDWARE_EXPORTER_SERVICE_TEMPLATE = f"{HARDWARE_EXPORTER_NAME}.service.j2"
+HARDWARE_EXPORTER_HEALTH_RETRY_COUNT = 3
+HARDWARE_EXPORTER_HEALTH_RETRY_TIMEOUT = 3
+HARDWARE_EXPORTER_CRASH_MSG = "Hardware exporter crashed unexpectedly, please refer to systemd logs..."
 
 # Redfish
 REDFISH_TIMEOUT = 10
@@ -55,7 +55,7 @@ TPR_RESOURCES: t.Dict[HWTool, str] = {
     HWTool.SAS3IRCU: "sas3ircu-bin",
 }
 
-EXPORTER_COLLECTOR_MAPPING = {
+HARDWARE_EXPORTER_COLLECTOR_MAPPING = {
     HWTool.STORCLI: ["collector.mega_raid"],
     HWTool.PERCCLI: ["collector.poweredge_raid"],
     HWTool.SAS2IRCU: ["collector.lsi_sas_2"],
@@ -70,4 +70,4 @@ EXPORTER_COLLECTOR_MAPPING = {
 TOOLS_DIR = Path("/usr/sbin")
 
 # SNAP environment
-SNAP_COMMON = Path(f"/var/snap/{EXPORTER_NAME}/common")
+SNAP_COMMON = Path(f"/var/snap/{HARDWARE_EXPORTER_NAME}/common")

@@ -9,34 +9,38 @@ from charms.operator_libs_linux.v1 import systemd
 from jinja2 import Environment, FileSystemLoader
 
 from config import (
-    EXPORTER_COLLECTOR_MAPPING,
-    EXPORTER_CONFIG_PATH,
-    EXPORTER_CONFIG_TEMPLATE,
-    EXPORTER_NAME,
-    EXPORTER_SERVICE_PATH,
-    EXPORTER_SERVICE_TEMPLATE,
+    HARDWARE_EXPORTER_COLLECTOR_MAPPING,
+    HARDWARE_EXPORTER_CONFIG_PATH,
+    HARDWARE_EXPORTER_CONFIG_TEMPLATE,
+    HARDWARE_EXPORTER_NAME,
+    HARDWARE_EXPORTER_SERVICE_PATH,
+    HARDWARE_EXPORTER_SERVICE_TEMPLATE,
 )
 from hw_tools import get_hw_tool_white_list
 
 logger = getLogger(__name__)
 
 
-def check_installed(func: Callable) -> Callable:
+def check_installed(exporter_name: str) -> Callable:
     """Ensure exporter service and exporter config is installed before running operations."""
 
-    @wraps(func)
-    def wrapper(self: Any, *args: Tuple[Any], **kwargs: Dict[str, Any]) -> Any:
-        """Wrap func."""
-        config_path = Path(EXPORTER_CONFIG_PATH)
-        service_path = Path(EXPORTER_SERVICE_PATH)
-        if not config_path.exists() or not service_path.exists():
-            logger.error("Exporter is not installed properly.")
-            logger.error("Failed to run '%s'", func.__name__)
-            return False
-        return_value = func(self, *args, **kwargs)
-        return return_value
+    def decorator(func: Callable) -> Callable:
+        @wraps(func)
+        def wrapper(self: Any, *args: Tuple[Any], **kwargs: Dict[str, Any]) -> Any:
+            """Wrap func."""
+            if exporter_name == HARDWARE_EXPORTER_NAME:
+                config_path = Path(HARDWARE_EXPORTER_CONFIG_PATH)
+                service_path = Path(HARDWARE_EXPORTER_SERVICE_PATH)
+            if not config_path.exists() or not service_path.exists():
+                logger.error("Exporter is not installed properly.")
+                logger.error("Failed to run '%s'", func.__name__)
+                return False
+            return_value = func(self, *args, **kwargs)
+            return return_value
 
-    return wrapper
+        return wrapper
+
+    return decorator
 
 
 class ExporterError(Exception):
@@ -48,12 +52,6 @@ class ExporterError(Exception):
 
 class ExporterTemplate:
     """Jinja template helper class for exporter."""
-
-    def __init__(self, search_path: Path):
-        """Initialize template class."""
-        self.environment = Environment(loader=FileSystemLoader(search_path / "templates"))
-        self.config_template = self.environment.get_template(EXPORTER_CONFIG_TEMPLATE)
-        self.service_template = self.environment.get_template(EXPORTER_SERVICE_TEMPLATE)
 
     def _install(self, path: Path, content: str) -> bool:
         """Install file."""
@@ -85,6 +83,31 @@ class ExporterTemplate:
             logger.info("Removing file '%s' - Done.", path)
         return success
 
+    def render_service(self, charm_dir: str, config_file: str) -> bool:
+        """Render and install exporter service file."""
+        content = self.service_template.render(CHARMDIR=charm_dir, CONFIG_FILE=config_file)
+        return self._install(self.exporter_service_path, content)
+
+    def remove_config(self) -> bool:
+        """Remove exporter config file."""
+        return self._uninstall(self.exporter_config_path)
+
+    def remove_service(self) -> bool:
+        """Remove exporter service file."""
+        return self._uninstall(self.exporter_service_path)
+
+
+class HardWareExporterTemplate(ExporterTemplate):
+    """Jinja template helper class for hardware exporter."""
+
+    def __init__(self, search_path: Path):
+        """Initialize hardware exporter template class."""
+        self.environment = Environment(loader=FileSystemLoader(search_path / "templates"))
+        self.config_template = self.environment.get_template(HARDWARE_EXPORTER_CONFIG_TEMPLATE)
+        self.service_template = self.environment.get_template(HARDWARE_EXPORTER_SERVICE_TEMPLATE)
+        self.exporter_service_path = HARDWARE_EXPORTER_SERVICE_PATH
+        self.exporter_config_path = HARDWARE_EXPORTER_CONFIG_PATH
+
     def render_config(
         self, port: int, level: str, collect_timeout: int, redfish_conn_params: dict
     ) -> bool:
@@ -92,7 +115,7 @@ class ExporterTemplate:
         hw_tools = get_hw_tool_white_list()
         collectors = []
         for tool in hw_tools:
-            collector = EXPORTER_COLLECTOR_MAPPING.get(tool)
+            collector = HARDWARE_EXPORTER_COLLECTOR_MAPPING.get(tool)
             if collector is not None:
                 collectors += collector
         content = self.config_template.render(
@@ -105,20 +128,7 @@ class ExporterTemplate:
             REDFISH_USERNAME=redfish_conn_params.get("username", ""),
             REDFISH_PASSWORD=redfish_conn_params.get("password", ""),
         )
-        return self._install(EXPORTER_CONFIG_PATH, content)
-
-    def render_service(self, charm_dir: str, config_file: str) -> bool:
-        """Render and install exporter service file."""
-        content = self.service_template.render(CHARMDIR=charm_dir, CONFIG_FILE=config_file)
-        return self._install(EXPORTER_SERVICE_PATH, content)
-
-    def remove_config(self) -> bool:
-        """Remove exporter config file."""
-        return self._uninstall(EXPORTER_CONFIG_PATH)
-
-    def remove_service(self) -> bool:
-        """Remove exporter service file."""
-        return self._uninstall(EXPORTER_SERVICE_PATH)
+        return self._install(HARDWARE_EXPORTER_CONFIG_PATH, content)
 
 
 class Exporter:
@@ -127,70 +137,78 @@ class Exporter:
     def __init__(self, charm_dir: Path) -> None:
         """Initialize the class."""
         self.charm_dir = charm_dir
-        self.template = ExporterTemplate(charm_dir)
+
+    def uninstall(self) -> bool:
+        """Uninstall the exporter."""
+        logger.info("Uninstalling %s.", self.exporter_name)
+        success = self.template.remove_config()
+        success = self.template.remove_service()
+        if not success:
+            logger.error("Failed to uninstall %s.", self.exporter_name)
+            return success
+        systemd.daemon_reload()
+        logger.info("%s uninstalled.", self.exporter_name)
+        return success
+
+
+class HardwareExporter(Exporter):
+    """A class representing the hardware exporter and the metric endpoints."""
+
+    def __init__(self, charm_dir: Path) -> None:
+        super().__init__(charm_dir)
+        self.template = HardWareExporterTemplate(charm_dir)
+        self.exporter_name = HARDWARE_EXPORTER_NAME
 
     def install(
         self, port: int, level: str, redfish_conn_params: dict, collect_timeout: int
     ) -> bool:
         """Install the exporter."""
-        logger.info("Installing %s.", EXPORTER_NAME)
+        logger.info("Installing %s.", HARDWARE_EXPORTER_NAME)
         success = self.template.render_config(
             port=port,
             level=level,
             redfish_conn_params=redfish_conn_params,
             collect_timeout=collect_timeout,
         )
-        success = self.template.render_service(str(self.charm_dir), str(EXPORTER_CONFIG_PATH))
+        success = self.template.render_service(str(self.charm_dir), str(HARDWARE_EXPORTER_CONFIG_PATH))
         if not success:
-            logger.error("Failed to install %s.", EXPORTER_NAME)
+            logger.error("Failed to install %s.", HARDWARE_EXPORTER_NAME)
             return success
         systemd.daemon_reload()
-        logger.info("%s installed.", EXPORTER_NAME)
+        logger.info("%s installed.", HARDWARE_EXPORTER_NAME)
         return success
 
-    def uninstall(self) -> bool:
-        """Uninstall the exporter."""
-        logger.info("Uninstalling %s.", EXPORTER_NAME)
-        success = self.template.remove_config()
-        success = self.template.remove_service()
-        if not success:
-            logger.error("Failed to uninstall %s.", EXPORTER_NAME)
-            return success
-        systemd.daemon_reload()
-        logger.info("%s uninstalled.", EXPORTER_NAME)
-        return success
-
-    @check_installed
+    @check_installed(HARDWARE_EXPORTER_NAME)
     def stop(self) -> None:
         """Stop the exporter daemon."""
-        systemd.service_stop(EXPORTER_NAME)
+        systemd.service_stop(HARDWARE_EXPORTER_NAME)
 
-    @check_installed
+    @check_installed(HARDWARE_EXPORTER_NAME)
     def start(self) -> None:
         """Start the exporter daemon."""
-        systemd.service_start(EXPORTER_NAME)
+        systemd.service_start(HARDWARE_EXPORTER_NAME)
 
-    @check_installed
+    @check_installed(HARDWARE_EXPORTER_NAME)
     def restart(self) -> None:
         """Restart the exporter daemon."""
-        systemd.service_restart(EXPORTER_NAME)
+        systemd.service_restart(HARDWARE_EXPORTER_NAME)
 
-    @check_installed
+    @check_installed(HARDWARE_EXPORTER_NAME)
     def enable(self) -> None:
         """Enable the exporter service."""
-        systemd.service_enable(EXPORTER_NAME)
+        systemd.service_enable(HARDWARE_EXPORTER_NAME)
 
-    @check_installed
+    @check_installed(HARDWARE_EXPORTER_NAME)
     def disable(self) -> None:
         """Restart the exporter service."""
-        systemd.service_disable(EXPORTER_NAME)
+        systemd.service_disable(HARDWARE_EXPORTER_NAME)
 
-    @check_installed
+    @check_installed(HARDWARE_EXPORTER_NAME)
     def check_active(self) -> bool:
         """Check if the exporter is active or not."""
-        return systemd.service_running(EXPORTER_NAME)
+        return systemd.service_running(HARDWARE_EXPORTER_NAME)
 
-    @check_installed
+    @check_installed(HARDWARE_EXPORTER_NAME)
     def check_health(self) -> bool:
         """Check if the exporter daemon is healthy or not."""
-        return not systemd.service_failed(EXPORTER_NAME)
+        return not systemd.service_failed(HARDWARE_EXPORTER_NAME)

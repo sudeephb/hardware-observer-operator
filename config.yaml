@@ -3,7 +3,7 @@
 #
 
 options:
-  exporter-port:
+  hardware-exporter-port:
     type: int
     default: 10200
     description: |
